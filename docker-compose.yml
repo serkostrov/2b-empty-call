@@ -1,0 +1,17 @@
+services:
+  call-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: call-worker
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
