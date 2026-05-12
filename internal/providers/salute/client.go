@@ -178,9 +178,9 @@ func (c *Client) createTask(ctx context.Context, token string, fileID string, au
 		return "", raw, fmt.Errorf("salute create task failed: status=%d body=%s", status, body)
 	}
 
-	id := firstString(raw, "task_id", "taskId", "id")
+	id := extractAsyncTaskID(raw)
 	if id == "" {
-		return "", raw, fmt.Errorf("salute task response does not contain task id")
+		return "", raw, fmt.Errorf("salute task response does not contain task id: body=%s", truncateForLog(body, 2048))
 	}
 	return id, raw, nil
 }
@@ -331,6 +331,73 @@ func extractUploadFileID(raw map[string]any) string {
 		return ""
 	}
 	return walk(raw, 0)
+}
+
+// extractAsyncTaskID parses speech:async_recognize JSON (Task or gateway-wrapped shapes).
+func extractAsyncTaskID(raw map[string]any) string {
+	if raw == nil {
+		return ""
+	}
+	if arr, ok := raw["tasks"].([]any); ok && len(arr) > 0 {
+		if m, ok := arr[0].(map[string]any); ok {
+			if s := extractAsyncTaskIDFromMap(m, 1); s != "" {
+				return s
+			}
+		}
+	}
+	if v, ok := raw["name"].(string); ok {
+		if s := extractIDFromResourceName(v); s != "" {
+			return s
+		}
+	}
+	return extractAsyncTaskIDFromMap(raw, 0)
+}
+
+func extractIDFromResourceName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	if i := strings.LastIndex(name, "/"); i >= 0 && i+1 < len(name) {
+		return strings.TrimSpace(name[i+1:])
+	}
+	return ""
+}
+
+func extractAsyncTaskIDFromMap(m map[string]any, depth int) string {
+	const maxDepth = 10
+	if m == nil || depth > maxDepth {
+		return ""
+	}
+	for _, k := range []string{
+		"task_id", "taskId",
+		"operation_id", "operationId",
+		"request_id", "requestId",
+		"uuid", "id",
+	} {
+		if v, ok := m[k]; ok {
+			if s := stringFromAny(v); s != "" {
+				return s
+			}
+		}
+	}
+	for _, wrap := range []string{"result", "data", "response", "payload", "task"} {
+		v, ok := m[wrap]
+		if !ok {
+			continue
+		}
+		switch child := v.(type) {
+		case map[string]any:
+			if s := extractAsyncTaskIDFromMap(child, depth+1); s != "" {
+				return s
+			}
+		case string:
+			if s := strings.TrimSpace(child); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 func stringFromAny(v any) string {
