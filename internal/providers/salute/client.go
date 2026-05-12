@@ -92,9 +92,9 @@ func (c *Client) upload(ctx context.Context, token string, audio domain.AudioFil
 		return "", raw, fmt.Errorf("salute upload failed: status=%d body=%s", status, body)
 	}
 
-	id := firstString(raw, "file_id", "fileId", "id", "request_file_id")
+	id := extractUploadFileID(raw)
 	if id == "" {
-		return "", raw, fmt.Errorf("salute upload response does not contain file id")
+		return "", raw, fmt.Errorf("salute upload response does not contain file id: body=%s", truncateForLog(body, 2048))
 	}
 	return id, raw, nil
 }
@@ -244,12 +244,67 @@ func doJSON(client *http.Client, req *http.Request, out any) (int, string, error
 func firstString(m map[string]any, keys ...string) string {
 	for _, k := range keys {
 		if v, ok := m[k]; ok {
-			if s, ok := v.(string); ok {
+			if s := stringFromAny(v); s != "" {
 				return s
 			}
 		}
 	}
 	return ""
+}
+
+// extractUploadFileID parses SmartSpeech data:upload JSON; the API has used both flat and wrapped shapes.
+func extractUploadFileID(raw map[string]any) string {
+	const maxDepth = 8
+	var walk func(m map[string]any, depth int) string
+	walk = func(m map[string]any, depth int) string {
+		if m == nil || depth > maxDepth {
+			return ""
+		}
+		if s := firstString(m,
+			"file_id", "fileId", "id",
+			"request_file_id", "requestFileId", "request_fileId",
+		); s != "" {
+			return s
+		}
+		for _, wrap := range []string{"result", "data", "response", "payload", "file", "upload"} {
+			if v, ok := m[wrap]; ok {
+				if child, ok := v.(map[string]any); ok {
+					if s := walk(child, depth+1); s != "" {
+						return s
+					}
+				}
+			}
+		}
+		return ""
+	}
+	return walk(raw, 0)
+}
+
+func stringFromAny(v any) string {
+	switch s := v.(type) {
+	case string:
+		return strings.TrimSpace(s)
+	case json.Number:
+		return strings.TrimSpace(s.String())
+	case float64:
+		if s == float64(int64(s)) {
+			return fmt.Sprintf("%.0f", s)
+		}
+		return strings.TrimSpace(fmt.Sprintf("%g", s))
+	case int:
+		return fmt.Sprintf("%d", s)
+	case int64:
+		return fmt.Sprintf("%d", s)
+	default:
+		return ""
+	}
+}
+
+func truncateForLog(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…(truncated)"
 }
 
 func extractText(raw any) string {
