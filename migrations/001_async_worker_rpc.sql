@@ -6,6 +6,9 @@ on public.processing_jobs(call_id)
 where type = 'analyze_call'
 and status in ('queued', 'running');
 
+-- Replace is not allowed when the return type (or some other signature detail) changes.
+drop function if exists public.claim_processing_job(text);
+
 create or replace function public.claim_processing_job(p_worker_id text)
 returns setof public.processing_jobs
 language plpgsql
@@ -47,6 +50,8 @@ revoke all on function public.claim_processing_job(text) from public;
 
 -- RPC for Lovable/frontend to start analysis safely.
 -- This function should be callable by authenticated users.
+drop function if exists public.start_call_analysis(uuid);
+
 create or replace function public.start_call_analysis(p_call_id uuid)
 returns public.processing_jobs
 language plpgsql
