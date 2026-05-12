@@ -6,7 +6,7 @@ The service no longer exposes a long synchronous `/v1/process` endpoint. It work
 
 1. Lovable uploads audio to Supabase Storage.
 2. Lovable creates/updates `calls` and `call_files` in Supabase.
-3. Lovable starts analysis via Supabase RPC `start_call_analysis(call_id)`.
+3. Lovable starts analysis via Supabase RPC `start_call_analysis` with body `{"_call_id": "<uuid>"}` (PostgREST requires JSON keys to match the SQL parameter name).
 4. The RPC creates a `processing_jobs` row with `status = queued`.
 5. This Go service atomically claims queued jobs via Supabase RPC `claim_processing_job(worker_id)`.
 6. The worker downloads audio from Supabase Storage.
@@ -44,7 +44,7 @@ It creates:
 
 - unique index preventing duplicate active `analyze_call` jobs;
 - `claim_processing_job(worker_id)` RPC for atomic worker locking;
-- `start_call_analysis(call_id)` RPC for Lovable/frontend.
+- `start_call_analysis(_call_id)` RPC for Lovable/frontend (request JSON must use `_call_id`).
 
 ## Run locally
 

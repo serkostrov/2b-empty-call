@@ -50,9 +50,10 @@ revoke all on function public.claim_processing_job(text) from public;
 
 -- RPC for Lovable/frontend to start analysis safely.
 -- This function should be callable by authenticated users.
+-- PostgREST matches JSON keys to parameter names; many clients send _call_id, not p_call_id.
 drop function if exists public.start_call_analysis(uuid);
 
-create or replace function public.start_call_analysis(p_call_id uuid)
+create or replace function public.start_call_analysis(_call_id uuid)
 returns public.processing_jobs
 language plpgsql
 security definer
@@ -69,7 +70,7 @@ begin
 
   select * into v_call
   from public.calls
-  where id = p_call_id
+  where id = _call_id
     and deleted_at is null;
 
   if v_call.id is null then
@@ -92,7 +93,7 @@ begin
   if exists (
     select 1
     from public.processing_jobs pj
-    where pj.call_id = p_call_id
+    where pj.call_id = _call_id
       and pj.type = 'analyze_call'
       and pj.status in ('queued', 'running')
   ) then
@@ -125,7 +126,7 @@ begin
     error_code = null,
     error_message = null,
     updated_at = now()
-  where id = p_call_id;
+  where id = _call_id;
 
   return v_job;
 end;
