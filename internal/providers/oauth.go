@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,7 +46,7 @@ func (c *OAuthClient) Token(ctx context.Context) (string, error) {
 	}
 
 	form := url.Values{}
-	form.Set("scope", c.Scope)
+	form.Set("scope", strings.TrimSpace(c.Scope))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.TokenURL, bytes.NewBufferString(form.Encode()))
 	if err != nil {

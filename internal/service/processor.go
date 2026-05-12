@@ -62,6 +62,34 @@ func (p *Processor) Process(ctx context.Context, audio domain.AudioFile) (domain
 	}, nil
 }
 
+// TranscribeOnly runs ASR under the same concurrency limit as Process.
+func (p *Processor) TranscribeOnly(ctx context.Context, audio domain.AudioFile) (domain.ASRResult, error) {
+	if err := validateAudio(audio); err != nil {
+		return domain.ASRResult{}, err
+	}
+	select {
+	case p.sem <- struct{}{}:
+		defer func() { <-p.sem }()
+	case <-ctx.Done():
+		return domain.ASRResult{}, ctx.Err()
+	}
+	return p.transcriber.Transcribe(ctx, audio)
+}
+
+// SummarizeOnly runs the LLM step under the same concurrency limit.
+func (p *Processor) SummarizeOnly(ctx context.Context, transcription string) (domain.SummaryResult, error) {
+	if strings.TrimSpace(transcription) == "" {
+		return domain.SummaryResult{}, errors.New("empty transcription")
+	}
+	select {
+	case p.sem <- struct{}{}:
+		defer func() { <-p.sem }()
+	case <-ctx.Done():
+		return domain.SummaryResult{}, ctx.Err()
+	}
+	return p.summarizer.Summarize(ctx, transcription)
+}
+
 func validateAudio(audio domain.AudioFile) error {
 	if len(audio.Bytes) == 0 {
 		return errors.New("empty audio file")

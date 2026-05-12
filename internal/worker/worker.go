@@ -146,7 +146,7 @@ func (w *Worker) processAnalyzeCall(ctx context.Context, log *slog.Logger, job d
 		return fmt.Errorf("get call: %w", err)
 	}
 
-	file, err := w.db.GetOriginalAudioFile(ctx, job.CallID)
+	file, err := w.db.GetOriginalAudioFile(ctx, call)
 	if err != nil {
 		return fmt.Errorf("get original audio: %w", err)
 	}
@@ -163,8 +163,8 @@ func (w *Worker) processAnalyzeCall(ctx context.Context, log *slog.Logger, job d
 	}
 	_ = w.db.InsertLog(ctx, job.OrganizationID, job.CallID, job.ID, "info", "recognizing", "Распознавание речи запущено", map[string]any{"filename": filename, "size_bytes": len(audioBytes)})
 
-	started := time.Now()
-	result, err := w.processor.Process(ctx, domain.AudioFile{Filename: filename, ContentType: contentType, Bytes: audioBytes})
+	pipelineStart := time.Now()
+	asr, err := w.processor.TranscribeOnly(ctx, domain.AudioFile{Filename: filename, ContentType: contentType, Bytes: audioBytes})
 	if err != nil {
 		return fmt.Errorf("process audio: %w", err)
 	}
@@ -172,9 +172,9 @@ func (w *Worker) processAnalyzeCall(ctx context.Context, log *slog.Logger, job d
 	if err := w.db.UpdateCallStatus(ctx, job.CallID, domain.CallStatusRecognized, nil, nil); err != nil {
 		return fmt.Errorf("update status recognized: %w", err)
 	}
-	_ = w.db.InsertLog(ctx, job.OrganizationID, job.CallID, job.ID, "info", "recognized", "Транскрибация получена", map[string]any{"duration": time.Since(started).String()})
+	_ = w.db.InsertLog(ctx, job.OrganizationID, job.CallID, job.ID, "info", "recognized", "Транскрибация получена", map[string]any{"duration": time.Since(pipelineStart).String()})
 
-	rawASRBytes, _ := json.MarshalIndent(result.RawASR, "", "  ")
+	rawASRBytes, _ := json.MarshalIndent(asr.Raw, "", "  ")
 	rawASRPath := w.db.RawPath(job.OrganizationID, job.CallID, "asr.json")
 	if err := w.db.UploadObject(ctx, w.cfg.Supabase.RawBucket, rawASRPath, "application/json", rawASRBytes, true); err != nil {
 		return fmt.Errorf("upload raw asr json: %w", err)
@@ -183,16 +183,24 @@ func (w *Worker) processAnalyzeCall(ctx context.Context, log *slog.Logger, job d
 		return fmt.Errorf("insert raw asr file: %w", err)
 	}
 
-	if err := w.db.InsertTranscription(ctx, job.OrganizationID, job.CallID, result.Transcription, result.RawASR); err != nil {
+	if err := w.db.InsertTranscription(ctx, job.OrganizationID, job.CallID, asr.Text, asr.Raw, w.cfg.Sber.Salute.Model); err != nil {
 		return fmt.Errorf("insert transcription: %w", err)
 	}
+	_ = w.db.InsertLog(ctx, job.OrganizationID, job.CallID, job.ID, "info", "transcription_saved", "Транскрибация и сырой ASR сохранены", nil)
 
 	if err := w.db.UpdateCallStatus(ctx, job.CallID, domain.CallStatusAnalyzing, nil, nil); err != nil {
 		return fmt.Errorf("update status analyzing: %w", err)
 	}
-	_ = w.db.InsertLog(ctx, job.OrganizationID, job.CallID, job.ID, "info", "analyzing", "Смысловой анализ завершен", nil)
+	_ = w.db.InsertLog(ctx, job.OrganizationID, job.CallID, job.ID, "info", "summarizing", "Запуск суммаризации (GigaChat)", nil)
 
-	rawLLMBytes, _ := json.MarshalIndent(result.RawGigaChat, "", "  ")
+	startedLLM := time.Now()
+	llm, err := w.processor.SummarizeOnly(ctx, asr.Text)
+	if err != nil {
+		return fmt.Errorf("process audio: summarize: %w", err)
+	}
+	_ = w.db.InsertLog(ctx, job.OrganizationID, job.CallID, job.ID, "info", "summarized", "Summary получен", map[string]any{"duration": time.Since(startedLLM).String()})
+
+	rawLLMBytes, _ := json.MarshalIndent(llm.Raw, "", "  ")
 	rawLLMPath := w.db.RawPath(job.OrganizationID, job.CallID, "gigachat.json")
 	if err := w.db.UploadObject(ctx, w.cfg.Supabase.RawBucket, rawLLMPath, "application/json", rawLLMBytes, true); err != nil {
 		return fmt.Errorf("upload raw llm json: %w", err)
@@ -201,8 +209,17 @@ func (w *Worker) processAnalyzeCall(ctx context.Context, log *slog.Logger, job d
 		return fmt.Errorf("insert raw llm file: %w", err)
 	}
 
-	if err := w.db.InsertAnalysis(ctx, job.OrganizationID, job.CallID, call.AnalysisTemplateID, result.Summary, result.RawGigaChat); err != nil {
+	if err := w.db.InsertAnalysis(ctx, job.OrganizationID, job.CallID, call.AnalysisTemplateID, llm.Summary, llm.Raw, w.cfg.Sber.GigaChat.Model); err != nil {
 		return fmt.Errorf("insert analysis: %w", err)
+	}
+	_ = w.db.InsertLog(ctx, job.OrganizationID, job.CallID, job.ID, "info", "analysis_saved", "Summary и сырой ответ LLM сохранены", nil)
+
+	result := domain.ProcessResult{
+		Transcription: asr.Text,
+		Summary:       llm.Summary,
+		RawASR:        asr.Raw,
+		RawGigaChat:   llm.Raw,
+		Duration:      time.Since(pipelineStart),
 	}
 
 	if err := w.generateReports(ctx, job, result); err != nil {
@@ -296,6 +313,8 @@ func classifyError(err error) string {
 		return "file_too_large"
 	case strings.Contains(msg, "download audio"):
 		return "storage_error"
+	case strings.Contains(msg, "original audio file not found"):
+		return "missing_audio_file"
 	case strings.Contains(msg, "salute upload"):
 		return "asr_upload_failed"
 	case strings.Contains(msg, "salute task"):
@@ -319,6 +338,8 @@ func userMessage(code string, err error) string {
 		return "Файл превышает допустимый размер"
 	case "storage_error":
 		return "Ошибка чтения или сохранения файла"
+	case "missing_audio_file":
+		return "Для звонка не найден аудиофайл в базе (проверьте call_files и поле calls.audio_file_id)"
 	case "asr_upload_failed":
 		return "Не удалось отправить файл на распознавание"
 	case "asr_task_failed":

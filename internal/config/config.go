@@ -84,10 +84,16 @@ type SaluteConfig struct {
 	Model            string        `env:"MODEL" env-default:"general"`
 	// SaluteSpeech RecognitionOptions.audio_encoding (e.g. MP3, PCM_S16LE). Empty = infer from filename / Content-Type.
 	AudioEncoding string `env:"AUDIO_ENCODING" env-default:""`
+	// Options passed with async_recognize (see RecognitionOptions in SaluteSpeech docs / reference clients).
+	SampleRate    int `env:"SAMPLE_RATE" env-default:"16000"`
+	ChannelsCount int `env:"CHANNELS_COUNT" env-default:"1"`
 }
 
 type GigaChatConfig struct {
-	AuthKey     string  `env:"AUTH_KEY" env-required:"true"`
+	AuthKey string `env:"AUTH_KEY" env-required:"true"`
+	// Optional; default is SBER_OAUTH_URL (same NGW endpoint as SaluteSpeech token).
+	OAuthURL string `env:"OAUTH_URL" env-default:""`
+	// Must match your GigaChat Studio project: GIGACHAT_API_PERS | GIGACHAT_API_B2B | GIGACHAT_API_CORP.
 	Scope       string  `env:"SCOPE" env-default:"GIGACHAT_API_PERS"`
 	APIURL      string  `env:"API_URL" env-required:"true"`
 	Model       string  `env:"MODEL" env-default:"GigaChat"`
@@ -116,11 +122,31 @@ func (c Config) Validate() error {
 	if c.Storage.MaxAudioBytes <= 0 {
 		return fmt.Errorf("STORAGE_MAX_AUDIO_BYTES must be > 0")
 	}
+	if c.Sber.Salute.SampleRate <= 0 {
+		return fmt.Errorf("SALUTE_SAMPLE_RATE must be > 0")
+	}
+	if c.Sber.Salute.ChannelsCount <= 0 {
+		return fmt.Errorf("SALUTE_CHANNELS_COUNT must be > 0")
+	}
+	gcScope := strings.TrimSpace(c.Sber.GigaChat.Scope)
+	switch gcScope {
+	case "GIGACHAT_API_PERS", "GIGACHAT_API_B2B", "GIGACHAT_API_CORP":
+	default:
+		return fmt.Errorf("GIGACHAT_SCOPE must be GIGACHAT_API_PERS, GIGACHAT_API_B2B, or GIGACHAT_API_CORP (got %q); wrong value causes NGW error code 7", gcScope)
+	}
 	return nil
 }
 
 func (c Config) TLSConfig() *tls.Config {
 	return &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: c.TLS.InsecureSkipVerify} //nolint:gosec
+}
+
+// GigaChatOAuthURL returns the token endpoint for GigaChat (override or shared NGW URL).
+func (s SberConfig) GigaChatOAuthURL() string {
+	if u := strings.TrimSpace(s.GigaChat.OAuthURL); u != "" {
+		return u
+	}
+	return s.OAuthURL
 }
 
 func parseLogLevel(v string) slog.Level {

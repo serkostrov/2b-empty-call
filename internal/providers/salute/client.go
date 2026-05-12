@@ -155,9 +155,11 @@ func (c *Client) createTask(ctx context.Context, token string, fileID string, au
 	payload := map[string]any{
 		"request_file_id": fileID,
 		"options": map[string]any{
-			"audio_encoding": enc,
-			"language":       c.cfg.Language,
-			"model":          c.cfg.Model,
+			"audio_encoding":  enc,
+			"language":        c.cfg.Language,
+			"model":           c.cfg.Model,
+			"sample_rate":     c.cfg.SampleRate,
+			"channels_count":  c.cfg.ChannelsCount,
 		},
 	}
 	b, _ := json.Marshal(payload)

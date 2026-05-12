@@ -53,21 +53,59 @@ func (c *Client) GetCall(ctx context.Context, callID string) (domain.Call, error
 	return calls[0], nil
 }
 
-func (c *Client) GetOriginalAudioFile(ctx context.Context, callID string) (domain.CallFile, error) {
+// GetOriginalAudioFile resolves the input audio row for ASR.
+// Order: calls.audio_file_id → call_files with known file_type values (Lovable often uses not only original_audio) → latest audio/* MIME.
+func (c *Client) GetOriginalAudioFile(ctx context.Context, call domain.Call) (domain.CallFile, error) {
+	if ptr := call.AudioFileID; ptr != nil {
+		if fid := strings.TrimSpace(*ptr); fid != "" {
+			var byID []domain.CallFile
+			u := c.restURL("call_files", map[string]string{
+				"id":      "eq." + fid,
+				"call_id": "eq." + call.ID,
+				"limit":   "1",
+			})
+			if err := c.doJSON(ctx, http.MethodGet, u, nil, &byID, nil); err != nil {
+				return domain.CallFile{}, err
+			}
+			if len(byID) > 0 {
+				return byID[0], nil
+			}
+		}
+	}
+	types := []string{
+		domain.FileTypeOriginalAudio,
+		domain.FileTypeUpload,
+		domain.FileTypeSource,
+		domain.FileTypeRecording,
+		domain.FileTypeAudio,
+	}
 	var files []domain.CallFile
 	u := c.restURL("call_files", map[string]string{
-		"call_id":   "eq." + callID,
-		"file_type": "eq." + domain.FileTypeOriginalAudio,
+		"call_id":   "eq." + call.ID,
+		"file_type": "in.(" + strings.Join(types, ",") + ")",
 		"order":     "created_at.desc",
 		"limit":     "1",
 	})
 	if err := c.doJSON(ctx, http.MethodGet, u, nil, &files, nil); err != nil {
 		return domain.CallFile{}, err
 	}
-	if len(files) == 0 {
-		return domain.CallFile{}, fmt.Errorf("original audio file not found for call_id=%s", callID)
+	if len(files) > 0 {
+		return files[0], nil
 	}
-	return files[0], nil
+	var byMime []domain.CallFile
+	u2 := c.restURL("call_files", map[string]string{
+		"call_id":   "eq." + call.ID,
+		"mime_type": "like.audio*",
+		"order":     "created_at.desc",
+		"limit":     "1",
+	})
+	if err := c.doJSON(ctx, http.MethodGet, u2, nil, &byMime, nil); err != nil {
+		return domain.CallFile{}, err
+	}
+	if len(byMime) > 0 {
+		return byMime[0], nil
+	}
+	return domain.CallFile{}, fmt.Errorf("original audio file not found for call_id=%s", call.ID)
 }
 
 func (c *Client) DownloadObject(ctx context.Context, bucket, objectPath string, maxBytes int64) ([]byte, error) {
@@ -184,7 +222,7 @@ func (c *Client) InsertLog(ctx context.Context, organizationID, callID, jobID, l
 	return c.doJSON(ctx, http.MethodPost, c.tableURL("processing_logs"), payload, nil, map[string]string{"Prefer": "return=minimal"})
 }
 
-func (c *Client) InsertTranscription(ctx context.Context, organizationID, callID, text string, rawASR any) error {
+func (c *Client) InsertTranscription(ctx context.Context, organizationID, callID, text string, rawASR any, asrModel string) error {
 	payload := map[string]any{
 		"organization_id":    organizationID,
 		"call_id":            callID,
@@ -194,10 +232,13 @@ func (c *Client) InsertTranscription(ctx context.Context, organizationID, callID
 		"speaker_mode":       "unknown",
 		"asr_provider":       "sber_salutespeech",
 	}
+	if strings.TrimSpace(asrModel) != "" {
+		payload["asr_model"] = asrModel
+	}
 	return c.doJSON(ctx, http.MethodPost, c.tableURL("call_transcriptions"), payload, nil, map[string]string{"Prefer": "return=minimal"})
 }
 
-func (c *Client) InsertAnalysis(ctx context.Context, organizationID, callID string, templateID *string, summary string, rawLLM any) error {
+func (c *Client) InsertAnalysis(ctx context.Context, organizationID, callID string, templateID *string, summary string, rawLLM any, llmModel string) error {
 	payload := map[string]any{
 		"organization_id":      organizationID,
 		"call_id":              callID,
@@ -214,6 +255,9 @@ func (c *Client) InsertAnalysis(ctx context.Context, organizationID, callID stri
 		"quality_flags_json":   map[string]any{},
 		"raw_llm_json":         rawLLM,
 		"llm_provider":         "gigachat",
+	}
+	if strings.TrimSpace(llmModel) != "" {
+		payload["llm_model"] = llmModel
 	}
 	return c.doJSON(ctx, http.MethodPost, c.tableURL("call_analysis"), payload, nil, map[string]string{"Prefer": "return=minimal"})
 }

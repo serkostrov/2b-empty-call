@@ -26,10 +26,10 @@ func New(cfg config.SberConfig, httpClient *http.Client) *Client {
 		http: httpClient,
 		oauth: &providers.OAuthClient{
 			HTTPClient: httpClient,
-			TokenURL:   cfg.OAuthURL,
+			TokenURL:   cfg.GigaChatOAuthURL(),
 			AuthScheme: "Basic",
-			AuthKey:    cfg.GigaChat.AuthKey,
-			Scope:      cfg.GigaChat.Scope,
+			AuthKey:    strings.TrimSpace(cfg.GigaChat.AuthKey),
+			Scope:      strings.TrimSpace(cfg.GigaChat.Scope),
 		},
 	}
 }
@@ -54,6 +54,9 @@ type chatResponse struct {
 func (c *Client) Summarize(ctx context.Context, transcription string) (domain.SummaryResult, error) {
 	token, err := c.oauth.Token(ctx)
 	if err != nil {
+		if strings.Contains(err.Error(), "consumed scope") || strings.Contains(err.Error(), `"code":7`) {
+			err = fmt.Errorf("%w (set GIGACHAT_SCOPE to the API tier shown in GigaChat Studio: GIGACHAT_API_PERS | GIGACHAT_API_B2B | GIGACHAT_API_CORP; see https://developers.sber.ru/docs/ru/gigachat/api/errors-description)", err)
+		}
 		return domain.SummaryResult{}, fmt.Errorf("gigachat auth: %w", err)
 	}
 

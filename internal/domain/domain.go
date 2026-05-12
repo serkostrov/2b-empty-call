@@ -113,7 +113,12 @@ const (
 	CallStatusReportReady      = "report_ready"
 	CallStatusError            = "error"
 
-	FileTypeOriginalAudio    = "original_audio"
+	FileTypeOriginalAudio = "original_audio"
+	// Alternate file_type values used by some apps when inserting call_files (Lovable, etc.).
+	FileTypeUpload     = "upload"
+	FileTypeSource     = "source"
+	FileTypeRecording  = "recording"
+	FileTypeAudio      = "audio"
 	FileTypeRawASRJSON       = "raw_asr_json"
 	FileTypeRawLLMJSON       = "raw_llm_json"
 	FileTypeTranscriptionTXT = "transcription_txt"
