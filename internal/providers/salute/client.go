@@ -215,7 +215,8 @@ func (c *Client) pollOnce(ctx context.Context, token, taskID string) (string, an
 		return "", nil, false, err
 	}
 	q := u.Query()
-	q.Set("task_id", taskID)
+	// SaluteSpeech REST expects query param "id", not "task_id" (see public clients / gateway).
+	q.Set("id", taskID)
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
@@ -234,17 +235,18 @@ func (c *Client) pollOnce(ctx context.Context, token, taskID string) (string, an
 		return "", raw, false, fmt.Errorf("salute task status failed: status=%d body=%s", status, body)
 	}
 
-	state := strings.ToLower(firstString(raw, "status", "task_status", "state"))
+	inner := saluteResultPayload(raw)
+	state := strings.ToLower(firstString(inner, "status", "task_status", "state"))
 	c.logger.Debug("salute task status", "task_id", taskID, "status", state)
 	switch state {
 	case "done", "success", "completed", "complete":
-		id := firstString(raw, "result_file_id", "resultFileId", "file_id", "fileId", "response_file_id")
+		id := firstString(inner, "response_file_id", "responseFileId", "result_file_id", "resultFileId", "file_id", "fileId")
 		if id == "" {
 			return "", raw, false, fmt.Errorf("salute task completed without result file id")
 		}
 		return id, raw, true, nil
 	case "error", "failed", "failure":
-		return "", raw, false, fmt.Errorf("salute task failed: %v", raw)
+		return "", raw, false, fmt.Errorf("salute task failed: %v", inner)
 	default:
 		return "", raw, false, nil
 	}
@@ -256,7 +258,7 @@ func (c *Client) download(ctx context.Context, token, fileID string) (any, error
 		return nil, err
 	}
 	q := u.Query()
-	q.Set("file_id", fileID)
+	q.Set("response_file_id", fileID)
 	u.RawQuery = q.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
@@ -331,6 +333,17 @@ func extractUploadFileID(raw map[string]any) string {
 		return ""
 	}
 	return walk(raw, 0)
+}
+
+// saluteResultPayload returns the inner Task object when the API wraps it as { "status": 200, "result": { ... } }.
+func saluteResultPayload(raw map[string]any) map[string]any {
+	if raw == nil {
+		return nil
+	}
+	if r, ok := raw["result"].(map[string]any); ok {
+		return r
+	}
+	return raw
 }
 
 // extractAsyncTaskID parses speech:async_recognize JSON (Task or gateway-wrapped shapes).
