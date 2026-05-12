@@ -52,7 +52,7 @@ func (c *Client) Transcribe(ctx context.Context, audio domain.AudioFile) (domain
 		return domain.ASRResult{Raw: rawUpload}, err
 	}
 
-	taskID, rawTask, err := c.createTask(ctx, token, fileID)
+	taskID, rawTask, err := c.createTask(ctx, token, fileID, audio)
 	if err != nil {
 		return domain.ASRResult{Raw: rawTask}, err
 	}
@@ -99,13 +99,65 @@ func (c *Client) upload(ctx context.Context, token string, audio domain.AudioFil
 	return id, raw, nil
 }
 
-func (c *Client) createTask(ctx context.Context, token string, fileID string) (string, any, error) {
-	// https://developers.sber.ru/docs/ru/salutespeech/rest/post-async-speech-recognition — required: request_file_id, options
+func (c *Client) resolveAudioEncoding(audio domain.AudioFile) (string, error) {
+	if s := strings.TrimSpace(c.cfg.AudioEncoding); s != "" {
+		return s, nil
+	}
+	return inferSaluteAudioEncoding(audio)
+}
+
+func inferSaluteAudioEncoding(audio domain.AudioFile) (string, error) {
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(audio.Filename)))
+	switch ext {
+	case ".mp3":
+		return "MP3", nil
+	case ".wav":
+		return "PCM_S16LE", nil
+	case ".flac":
+		return "FLAC", nil
+	case ".ogg":
+		return "OPUS", nil
+	}
+
+	ct := strings.ToLower(strings.TrimSpace(audio.ContentType))
+	ctBase := ct
+	if idx := strings.IndexByte(ct, ';'); idx >= 0 {
+		ctBase = strings.TrimSpace(ct[:idx])
+	}
+	switch {
+	case ctBase == "audio/mpeg" || ctBase == "audio/mp3":
+		return "MP3", nil
+	case ctBase == "audio/wav" || ctBase == "audio/x-wav" || ctBase == "audio/wave":
+		return "PCM_S16LE", nil
+	case ctBase == "audio/flac":
+		return "FLAC", nil
+	case strings.Contains(ct, "codecs=opus"):
+		return "OPUS", nil
+	case ctBase == "audio/ogg":
+		return "OPUS", nil
+	case ctBase == "audio/x-pcm" || strings.HasPrefix(ct, "audio/x-pcm"):
+		return "PCM_S16LE", nil
+	case strings.HasPrefix(ct, "audio/pcma"):
+		return "ALAW", nil
+	case strings.HasPrefix(ct, "audio/pcmu"):
+		return "MULAW", nil
+	}
+
+	return "", fmt.Errorf("cannot infer salute audio_encoding for filename %q (content-type %q); set SALUTE_AUDIO_ENCODING (e.g. MP3, PCM_S16LE, FLAC, OPUS)", audio.Filename, audio.ContentType)
+}
+
+func (c *Client) createTask(ctx context.Context, token string, fileID string, audio domain.AudioFile) (string, any, error) {
+	enc, err := c.resolveAudioEncoding(audio)
+	if err != nil {
+		return "", nil, err
+	}
+	// https://developers.sber.ru/docs/ru/salutespeech/rest/post-async-speech-recognition — required: request_file_id, options (incl. audio_encoding)
 	payload := map[string]any{
 		"request_file_id": fileID,
 		"options": map[string]any{
-			"language": c.cfg.Language,
-			"model":    c.cfg.Model,
+			"audio_encoding": enc,
+			"language":       c.cfg.Language,
+			"model":          c.cfg.Model,
 		},
 	}
 	b, _ := json.Marshal(payload)

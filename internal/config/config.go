@@ -82,6 +82,8 @@ type SaluteConfig struct {
 	PollTimeout      time.Duration `env:"POLL_TIMEOUT" env-default:"25m"`
 	Language         string        `env:"LANGUAGE" env-default:"ru-RU"`
 	Model            string        `env:"MODEL" env-default:"general"`
+	// SaluteSpeech RecognitionOptions.audio_encoding (e.g. MP3, PCM_S16LE). Empty = infer from filename / Content-Type.
+	AudioEncoding string `env:"AUDIO_ENCODING" env-default:""`
 }
 
 type GigaChatConfig struct {
