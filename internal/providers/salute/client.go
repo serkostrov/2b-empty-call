@@ -100,8 +100,9 @@ func (c *Client) upload(ctx context.Context, token string, audio domain.AudioFil
 }
 
 func (c *Client) createTask(ctx context.Context, token string, fileID string) (string, any, error) {
+	// https://developers.sber.ru/docs/ru/salutespeech/rest/post-async-speech-recognition — required: request_file_id, options
 	payload := map[string]any{
-		"file_id": fileID,
+		"request_file_id": fileID,
 		"options": map[string]any{
 			"language": c.cfg.Language,
 			"model":    c.cfg.Model,
