@@ -85,8 +85,10 @@ type SaluteConfig struct {
 	// SaluteSpeech RecognitionOptions.audio_encoding (e.g. MP3, PCM_S16LE). Empty = infer from filename / Content-Type.
 	AudioEncoding string `env:"AUDIO_ENCODING" env-default:""`
 	// Options passed with async_recognize (see RecognitionOptions in SaluteSpeech docs / reference clients).
-	SampleRate    int `env:"SAMPLE_RATE" env-default:"16000"`
-	ChannelsCount int `env:"CHANNELS_COUNT" env-default:"1"`
+	SampleRate               int  `env:"SAMPLE_RATE" env-default:"16000"`
+	ChannelsCount            int  `env:"CHANNELS_COUNT" env-default:"1"`
+	SpeakerSeparationEnabled bool `env:"SPEAKER_SEPARATION_ENABLED" env-default:"true"`
+	SpeakersCount            int  `env:"SPEAKERS_COUNT" env-default:"2"`
 }
 
 type GigaChatConfig struct {
@@ -127,6 +129,9 @@ func (c Config) Validate() error {
 	}
 	if c.Sber.Salute.ChannelsCount <= 0 {
 		return fmt.Errorf("SALUTE_CHANNELS_COUNT must be > 0")
+	}
+	if c.Sber.Salute.SpeakersCount < 0 {
+		return fmt.Errorf("SALUTE_SPEAKERS_COUNT must be >= 0")
 	}
 	gcScope := strings.TrimSpace(c.Sber.GigaChat.Scope)
 	switch gcScope {

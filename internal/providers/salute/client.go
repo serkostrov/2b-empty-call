@@ -67,11 +67,175 @@ func (c *Client) Transcribe(ctx context.Context, audio domain.AudioFile) (domain
 		return domain.ASRResult{Raw: rawResult}, err
 	}
 
-	text := extractText(rawResult)
+	segments := extractSegments(rawResult)
+	text := formatSpeakerTranscript(segments)
+
 	if strings.TrimSpace(text) == "" {
 		return domain.ASRResult{Raw: rawResult}, errors.New("empty transcription or unsupported ASR response structure")
 	}
-	return domain.ASRResult{Text: text, Raw: rawResult}, nil
+
+	return domain.ASRResult{
+		Text:     text,
+		Segments: segments,
+		Raw:      rawResult,
+	}, nil
+}
+func extractSegments(raw any) []domain.SpeechSegment {
+	var segments []domain.SpeechSegment
+	walkSegments(raw, &segments)
+
+	if len(segments) == 0 {
+		text := extractText(raw)
+		if strings.TrimSpace(text) != "" {
+			return []domain.SpeechSegment{
+				{
+					Speaker: "Спикер 1",
+					Text:    strings.TrimSpace(text),
+				},
+			}
+		}
+	}
+
+	return segments
+}
+
+func walkSegments(v any, segments *[]domain.SpeechSegment) {
+	switch x := v.(type) {
+	case map[string]any:
+		if seg, ok := segmentFromMap(x); ok {
+			*segments = append(*segments, seg)
+			return
+		}
+		for _, val := range x {
+			walkSegments(val, segments)
+		}
+	case []any:
+		for _, item := range x {
+			walkSegments(item, segments)
+		}
+	}
+}
+
+func segmentFromMap(m map[string]any) (domain.SpeechSegment, bool) {
+	text := firstString(m, "normalized_text", "normalizedText", "text", "transcript", "transcription")
+	if strings.TrimSpace(text) == "" {
+		return domain.SpeechSegment{}, false
+	}
+
+	speakerID := extractSpeakerID(m)
+	channel := intFromAny(firstValue(m, "channel"))
+
+	if speakerID <= 0 && channel > 0 {
+		speakerID = channel
+	}
+	if speakerID <= 0 {
+		speakerID = 1
+	}
+
+	return domain.SpeechSegment{
+		Speaker: fmt.Sprintf("Спикер %d", speakerID),
+		Text:    strings.TrimSpace(text),
+		Start:   durationSeconds(firstValue(m, "start", "processed_audio_start", "processedAudioStart")),
+		End:     durationSeconds(firstValue(m, "end", "processed_audio_end", "processedAudioEnd")),
+		Channel: channel,
+	}, true
+}
+
+func extractSpeakerID(m map[string]any) int {
+	for _, key := range []string{"speaker_info", "speakerInfo"} {
+		if raw, ok := m[key].(map[string]any); ok {
+			if id := intFromAny(firstValue(raw, "speaker_id", "speakerId")); id > 0 {
+				return id
+			}
+		}
+	}
+	return intFromAny(firstValue(m, "speaker_id", "speakerId"))
+}
+
+func formatSpeakerTranscript(segments []domain.SpeechSegment) string {
+	var b strings.Builder
+
+	for _, seg := range segments {
+		text := strings.TrimSpace(seg.Text)
+		if text == "" {
+			continue
+		}
+
+		speaker := strings.TrimSpace(seg.Speaker)
+		if speaker == "" {
+			speaker = "Спикер 1"
+		}
+
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(speaker)
+		b.WriteString(": ")
+		b.WriteString(text)
+	}
+
+	return strings.TrimSpace(b.String())
+}
+
+func firstValue(m map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if v, ok := m[key]; ok {
+			return v
+		}
+	}
+	return nil
+}
+
+func intFromAny(v any) int {
+	switch x := v.(type) {
+	case int:
+		return x
+	case int64:
+		return int(x)
+	case float64:
+		return int(x)
+	case json.Number:
+		i, _ := x.Int64()
+		return int(i)
+	case string:
+		var i int
+		_, _ = fmt.Sscanf(strings.TrimSpace(x), "%d", &i)
+		return i
+	default:
+		return 0
+	}
+}
+
+func durationSeconds(v any) float64 {
+	switch x := v.(type) {
+	case map[string]any:
+		seconds := floatFromAny(firstValue(x, "seconds"))
+		nanos := floatFromAny(firstValue(x, "nanos"))
+		return seconds + nanos/1_000_000_000
+	case string:
+		s := strings.TrimSuffix(strings.TrimSpace(x), "s")
+		var f float64
+		_, _ = fmt.Sscanf(s, "%f", &f)
+		return f
+	default:
+		return 0
+	}
+}
+
+func floatFromAny(v any) float64 {
+	switch x := v.(type) {
+	case float64:
+		return x
+	case int:
+		return float64(x)
+	case int64:
+		return float64(x)
+	case json.Number:
+		f, _ := x.Float64()
+		return f
+	default:
+		return 0
+	}
 }
 
 func (c *Client) upload(ctx context.Context, token string, audio domain.AudioFile) (string, any, error) {
@@ -152,15 +316,25 @@ func (c *Client) createTask(ctx context.Context, token string, fileID string, au
 		return "", nil, err
 	}
 	// https://developers.sber.ru/docs/ru/salutespeech/rest/post-async-speech-recognition — required: request_file_id, options (incl. audio_encoding)
+	options := map[string]any{
+		"audio_encoding": enc,
+		"language":       c.cfg.Language,
+		"model":          c.cfg.Model,
+		"sample_rate":    c.cfg.SampleRate,
+		"channels_count": c.cfg.ChannelsCount,
+	}
+
+	if c.cfg.SpeakerSeparationEnabled {
+		options["speaker_separation_options"] = map[string]any{
+			"enable":                   true,
+			"enable_only_main_speaker": false,
+			"count":                    c.cfg.SpeakersCount,
+		}
+	}
+
 	payload := map[string]any{
 		"request_file_id": fileID,
-		"options": map[string]any{
-			"audio_encoding":  enc,
-			"language":        c.cfg.Language,
-			"model":           c.cfg.Model,
-			"sample_rate":     c.cfg.SampleRate,
-			"channels_count":  c.cfg.ChannelsCount,
-		},
+		"options":         options,
 	}
 	b, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.RecognizeURL, bytes.NewReader(b))

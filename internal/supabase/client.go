@@ -222,14 +222,14 @@ func (c *Client) InsertLog(ctx context.Context, organizationID, callID, jobID, l
 	return c.doJSON(ctx, http.MethodPost, c.tableURL("processing_logs"), payload, nil, map[string]string{"Prefer": "return=minimal"})
 }
 
-func (c *Client) InsertTranscription(ctx context.Context, organizationID, callID, text string, rawASR any, asrModel string) error {
+func (c *Client) InsertTranscription(ctx context.Context, organizationID, callID, text string, segments []domain.SpeechSegment, rawASR any, asrModel string) error {
 	payload := map[string]any{
 		"organization_id":    organizationID,
 		"call_id":            callID,
 		"transcription_text": text,
-		"segments_json":      []any{},
+		"segments_json":      segments,
 		"raw_asr_json":       rawASR,
-		"speaker_mode":       "unknown",
+		"speaker_mode":       "salute_speaker_separation",
 		"asr_provider":       "sber_salutespeech",
 	}
 	if strings.TrimSpace(asrModel) != "" {

@@ -11,9 +11,18 @@ type AudioFile struct {
 	Bytes       []byte
 }
 
+type SpeechSegment struct {
+	Speaker string  `json:"speaker"`
+	Text    string  `json:"text"`
+	Start   float64 `json:"start,omitempty"`
+	End     float64 `json:"end,omitempty"`
+	Channel int     `json:"channel,omitempty"`
+}
+
 type ASRResult struct {
-	Text string
-	Raw  any
+	Text     string
+	Segments []SpeechSegment
+	Raw      any
 }
 
 type SummaryResult struct {
@@ -115,10 +124,10 @@ const (
 
 	FileTypeOriginalAudio = "original_audio"
 	// Alternate file_type values used by some apps when inserting call_files (Lovable, etc.).
-	FileTypeUpload     = "upload"
-	FileTypeSource     = "source"
-	FileTypeRecording  = "recording"
-	FileTypeAudio      = "audio"
+	FileTypeUpload           = "upload"
+	FileTypeSource           = "source"
+	FileTypeRecording        = "recording"
+	FileTypeAudio            = "audio"
 	FileTypeRawASRJSON       = "raw_asr_json"
 	FileTypeRawLLMJSON       = "raw_llm_json"
 	FileTypeTranscriptionTXT = "transcription_txt"
