@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -82,21 +83,132 @@ func (c *Client) Transcribe(ctx context.Context, audio domain.AudioFile) (domain
 }
 func extractSegments(raw any) []domain.SpeechSegment {
 	var segments []domain.SpeechSegment
-	walkSegments(raw, &segments)
+	walkTranscriptions(raw, &segments)
 
-	if len(segments) == 0 {
-		text := extractText(raw)
-		if strings.TrimSpace(text) != "" {
-			return []domain.SpeechSegment{
-				{
-					Speaker: "Спикер 1",
-					Text:    strings.TrimSpace(text),
-				},
-			}
+	segments = compactSegments(segments)
+
+	sort.SliceStable(segments, func(i, j int) bool {
+		if segments[i].Start == segments[j].Start {
+			return segments[i].End < segments[j].End
 		}
-	}
+		return segments[i].Start < segments[j].Start
+	})
 
 	return segments
+}
+
+func walkTranscriptions(v any, out *[]domain.SpeechSegment) {
+	switch x := v.(type) {
+	case map[string]any:
+		if isTranscriptionNode(x) {
+			if seg, ok := segmentFromTranscription(x); ok {
+				*out = append(*out, seg)
+			}
+			return
+		}
+
+		for _, val := range x {
+			walkTranscriptions(val, out)
+		}
+
+	case []any:
+		for _, item := range x {
+			walkTranscriptions(item, out)
+		}
+	}
+}
+
+func isTranscriptionNode(m map[string]any) bool {
+	_, hasResults := m["results"]
+	_, hasChannel := m["channel"]
+	_, hasSpeakerInfo := m["speaker_info"]
+	_, hasSpeakerInfoCamel := m["speakerInfo"]
+
+	return hasResults && (hasChannel || hasSpeakerInfo || hasSpeakerInfoCamel)
+}
+
+func segmentFromTranscription(m map[string]any) (domain.SpeechSegment, bool) {
+	if eou, ok := boolValue(m, "eou"); ok && !eou {
+		return domain.SpeechSegment{}, false
+	}
+
+	text := bestHypothesisText(m)
+	if strings.TrimSpace(text) == "" {
+		return domain.SpeechSegment{}, false
+	}
+
+	channel := intFromAny(firstValue(m, "channel"))
+
+	speakerID := extractSpeakerID(m)
+	if speakerID <= 0 && channel > 0 {
+		speakerID = channel
+	}
+	if speakerID <= 0 {
+		speakerID = 1
+	}
+
+	start := durationSeconds(firstValue(m, "processed_audio_start", "processedAudioStart"))
+	end := durationSeconds(firstValue(m, "processed_audio_end", "processedAudioEnd"))
+
+	return domain.SpeechSegment{
+		Speaker: fmt.Sprintf("Спикер %d", speakerID),
+		Text:    strings.TrimSpace(text),
+		Start:   start,
+		End:     end,
+		Channel: channel,
+	}, true
+}
+
+func bestHypothesisText(m map[string]any) string {
+	results, ok := m["results"].([]any)
+	if !ok || len(results) == 0 {
+		return ""
+	}
+
+	h, ok := results[0].(map[string]any)
+	if !ok {
+		return ""
+	}
+
+	text := firstString(h, "normalized_text", "normalizedText")
+	if strings.TrimSpace(text) != "" {
+		return text
+	}
+
+	return firstString(h, "text")
+}
+
+func boolValue(m map[string]any, key string) (bool, bool) {
+	v, ok := m[key]
+	if !ok {
+		return false, false
+	}
+
+	b, ok := v.(bool)
+	return b, ok
+}
+
+func compactSegments(in []domain.SpeechSegment) []domain.SpeechSegment {
+	out := make([]domain.SpeechSegment, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+
+	for _, seg := range in {
+		text := strings.TrimSpace(seg.Text)
+		if text == "" {
+			continue
+		}
+
+		key := fmt.Sprintf("%s|%.3f|%.3f|%s", seg.Speaker, seg.Start, seg.End, text)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+
+		seen[key] = struct{}{}
+		seg.Text = text
+		out = append(out, seg)
+	}
+
+	return out
 }
 
 func walkSegments(v any, segments *[]domain.SpeechSegment) {
@@ -156,25 +268,27 @@ func formatSpeakerTranscript(segments []domain.SpeechSegment) string {
 	var b strings.Builder
 
 	for _, seg := range segments {
-		text := strings.TrimSpace(seg.Text)
-		if text == "" {
-			continue
-		}
-
-		speaker := strings.TrimSpace(seg.Speaker)
-		if speaker == "" {
-			speaker = "Спикер 1"
-		}
-
 		if b.Len() > 0 {
-			b.WriteString("\n")
+			b.WriteString("\n\n")
 		}
-		b.WriteString(speaker)
-		b.WriteString(": ")
-		b.WriteString(text)
+
+		b.WriteString(formatTime(seg.Start))
+		b.WriteString("\n")
+		b.WriteString(seg.Speaker)
+		b.WriteString("\n")
+		b.WriteString(seg.Text)
 	}
 
 	return strings.TrimSpace(b.String())
+}
+
+func formatTime(seconds float64) string {
+	if seconds < 0 {
+		seconds = 0
+	}
+
+	total := int(seconds + 0.5)
+	return fmt.Sprintf("%d:%02d", total/60, total%60)
 }
 
 func firstValue(m map[string]any, keys ...string) any {
@@ -320,16 +434,37 @@ func (c *Client) createTask(ctx context.Context, token string, fileID string, au
 		"audio_encoding": enc,
 		"language":       c.cfg.Language,
 		"model":          c.cfg.Model,
+
+		// Для этого файла корректно:
 		"sample_rate":    c.cfg.SampleRate,
 		"channels_count": c.cfg.ChannelsCount,
-	}
 
-	if c.cfg.SpeakerSeparationEnabled {
-		options["speaker_separation_options"] = map[string]any{
+		// Чтобы не получать пачку альтернатив.
+		"hypotheses_count": 1,
+
+		// Чтобы не тащить partial-гипотезы.
+		"enable_partial_results": map[string]any{
+			"enable": false,
+		},
+
+		// Чтобы SaluteSpeech сам разделял говорящих.
+		"speaker_separation_options": map[string]any{
 			"enable":                   true,
 			"enable_only_main_speaker": false,
-			"count":                    c.cfg.SpeakersCount,
-		}
+			"count":                    2,
+		},
+
+		"normalization_options": map[string]any{
+			"enable": map[string]any{
+				"enable": true,
+			},
+			"punctuation": map[string]any{
+				"enable": true,
+			},
+			"capitalization": map[string]any{
+				"enable": true,
+			},
+		},
 	}
 
 	payload := map[string]any{
