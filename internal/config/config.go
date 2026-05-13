@@ -71,7 +71,7 @@ type SberConfig struct {
 }
 
 type SaluteConfig struct {
-	AuthHeaderScheme string        `env:"AUTH_HEADER_SCHEME" env-default:"Bearer"`
+	AuthHeaderScheme string        `env:"AUTH_HEADER_SCHEME" env-default:"Basic"`
 	AuthKey          string        `env:"AUTH_KEY" env-required:"true"`
 	Scope            string        `env:"SCOPE" env-default:"SALUTE_SPEECH_PERS"`
 	UploadURL        string        `env:"UPLOAD_URL" env-required:"true"`
