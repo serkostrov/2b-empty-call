@@ -89,6 +89,8 @@ func extractSegments(raw any) []domain.SpeechSegment {
 	walkTranscriptions(raw, &segments)
 
 	segments = compactSegments(segments)
+	segments = preferFinalUtterances(segments)
+	segments = dedupeIdenticalMultiChannel(segments)
 
 	sort.SliceStable(segments, func(i, j int) bool {
 		if segments[i].Start == segments[j].Start {
@@ -168,26 +170,134 @@ func segmentFromTranscription(m map[string]any) (domain.SpeechSegment, bool) {
 		return domain.SpeechSegment{}, false
 	}
 
+	speaker, skip := speakerDisplayFromNode(m)
+	if skip {
+		return domain.SpeechSegment{}, false
+	}
+
 	channel := intFromAny(firstValue(m, "channel"))
-
-	speakerID := extractSpeakerID(m)
-	if speakerID <= 0 && channel > 0 {
-		speakerID = channel
-	}
-	if speakerID <= 0 {
-		speakerID = 1
+	if _, has := m["channel"]; !has {
+		channel = 0
 	}
 
-	start := durationSeconds(firstValue(m, "processed_audio_start", "processedAudioStart"))
-	end := durationSeconds(firstValue(m, "processed_audio_end", "processedAudioEnd"))
+	processedStart := durationSeconds(firstValue(m, "processed_audio_start", "processedAudioStart"))
+	processedEnd := durationSeconds(firstValue(m, "processed_audio_end", "processedAudioEnd"))
+	start, end := utteranceTimeBounds(m, processedStart, processedEnd)
+
+	bufS, bufE := processedStart, processedEnd
+	if bufE <= bufS {
+		bufS, bufE = start, end
+	}
+
+	eou := false
+	if v, ok := m["eou"]; ok {
+		eou, _ = v.(bool)
+	}
 
 	return domain.SpeechSegment{
-		Speaker: fmt.Sprintf("Спикер %d", speakerID),
-		Text:    strings.TrimSpace(text),
-		Start:   start,
-		End:     end,
-		Channel: channel,
+		Speaker:           speaker,
+		Text:              strings.TrimSpace(text),
+		Start:             start,
+		End:               end,
+		Channel:           channel,
+		EOU:               eou,
+		BufferWindowStart: bufS,
+		BufferWindowEnd:   bufE,
 	}, true
+}
+
+// speakerDisplayFromNode maps SaluteSpeech RecognitionResponse.{speaker_info, channel} to a stable label.
+// See recognition.proto (SpeakerInfo, channel) and public JSON examples on developers.sber.ru.
+func speakerDisplayFromNode(m map[string]any) (label string, skip bool) {
+	for _, key := range []string{"speaker_info", "speakerInfo"} {
+		switch raw := m[key].(type) {
+		case map[string]any:
+			if v, ok := firstOptionalValue(raw, "speaker_id", "speakerId"); ok {
+				return speakerLabelFromID(intFromAny(v))
+			}
+		case []any:
+			if len(raw) == 0 {
+				continue
+			}
+			if item, ok := raw[0].(map[string]any); ok {
+				if v, ok := firstOptionalValue(item, "speaker_id", "speakerId"); ok {
+					return speakerLabelFromID(intFromAny(v))
+				}
+			}
+		}
+	}
+
+	if _, has := m["channel"]; has {
+		ch := intFromAny(m["channel"])
+		if ch < 0 {
+			ch = 0
+		}
+		// channel is 0-based in API examples (0 = first channel / side).
+		return fmt.Sprintf("Спикер %d", ch+1), false
+	}
+
+	return "Спикер 1", false
+}
+
+func speakerLabelFromID(id int) (label string, skip bool) {
+	if id == -1 {
+		// Overlapping / mixed-speaker hypothesis; keeping it duplicates diarized lines.
+		return "", true
+	}
+	if id < -1 {
+		return fmt.Sprintf("Спикер (%d)", id), false
+	}
+	if id == 0 {
+		return "Спикер 1", false
+	}
+	return fmt.Sprintf("Спикер %d", id), false
+}
+
+func firstOptionalValue(m map[string]any, keys ...string) (any, bool) {
+	for _, key := range keys {
+		if v, ok := m[key]; ok {
+			return v, true
+		}
+	}
+	return nil, false
+}
+
+// utteranceTimeBounds prefers per-hypothesis word alignments so segment timestamps reflect speech,
+// not only the decoder buffer cursor (processed_audio_* is often identical across partial hypotheses).
+func utteranceTimeBounds(m map[string]any, processedStart, processedEnd float64) (start, end float64) {
+	start, end = processedStart, processedEnd
+	results, ok := m["results"].([]any)
+	if !ok || len(results) == 0 {
+		return start, end
+	}
+	first, ok := results[0].(map[string]any)
+	if !ok {
+		return start, end
+	}
+
+	wa, ok := first["word_alignments"].([]any)
+	if !ok {
+		wa, ok = first["wordAlignments"].([]any)
+	}
+	if !ok || len(wa) == 0 {
+		return start, end
+	}
+
+	firstWord, ok := wa[0].(map[string]any)
+	if !ok {
+		return start, end
+	}
+	lastWord, ok := wa[len(wa)-1].(map[string]any)
+	if !ok {
+		return start, end
+	}
+
+	wStart := durationSeconds(firstValue(firstWord, "start"))
+	wEnd := durationSeconds(firstValue(lastWord, "end"))
+	if wEnd < wStart {
+		return start, end
+	}
+	return wStart, wEnd
 }
 
 func bestHypothesisText(m map[string]any) string {
@@ -206,27 +316,6 @@ func bestHypothesisText(m map[string]any) string {
 	}
 
 	return firstString(first, "text")
-}
-
-func extractSpeakerID(m map[string]any) int {
-	for _, key := range []string{"speaker_info", "speakerInfo"} {
-		switch raw := m[key].(type) {
-		case map[string]any:
-			if id := intFromAny(firstValue(raw, "speaker_id", "speakerId")); id > 0 {
-				return id
-			}
-		case []any:
-			if len(raw) > 0 {
-				if item, ok := raw[0].(map[string]any); ok {
-					if id := intFromAny(firstValue(item, "speaker_id", "speakerId")); id > 0 {
-						return id
-					}
-				}
-			}
-		}
-	}
-
-	return intFromAny(firstValue(m, "speaker_id", "speakerId"))
 }
 
 func compactSegments(in []domain.SpeechSegment) []domain.SpeechSegment {
@@ -286,6 +375,106 @@ func compactSegments(in []domain.SpeechSegment) []domain.SpeechSegment {
 		out = append(out, item.seg)
 	}
 
+	return out
+}
+
+// preferFinalUtterances drops non-final SaluteSpeech refinements for the same speaker and time bucket.
+// RecognitionResponse.eou marks a committed utterance; earlier rows often repeat partial text.
+func preferFinalUtterances(in []domain.SpeechSegment) []domain.SpeechSegment {
+	type groupKey struct {
+		speaker string
+		startMs int64
+		endMs   int64
+	}
+
+	buckets := make(map[groupKey][]domain.SpeechSegment)
+	order := make([]groupKey, 0)
+
+	for _, seg := range in {
+		seg.Text = strings.TrimSpace(seg.Text)
+		if seg.Text == "" {
+			continue
+		}
+		k := groupKey{seg.Speaker, quantMs(seg.BufferWindowStart), quantMs(seg.BufferWindowEnd)}
+		if _, ok := buckets[k]; !ok {
+			order = append(order, k)
+		}
+		buckets[k] = append(buckets[k], seg)
+	}
+
+	out := make([]domain.SpeechSegment, 0, len(order))
+	for _, k := range order {
+		items := buckets[k]
+		var finals []domain.SpeechSegment
+		for _, s := range items {
+			if s.EOU {
+				finals = append(finals, s)
+			}
+		}
+		pick := items
+		if len(finals) > 0 {
+			pick = finals
+		}
+		best := pick[0]
+		for _, s := range pick[1:] {
+			if utteranceScore(s) > utteranceScore(best) {
+				best = s
+			}
+		}
+		out = append(out, best)
+	}
+	return out
+}
+
+func utteranceScore(s domain.SpeechSegment) int {
+	n := len([]rune(s.Text))
+	if s.EOU {
+		n += 1_000_000
+	}
+	return n
+}
+
+func quantMs(seconds float64) int64 {
+	if seconds < 0 {
+		return 0
+	}
+	return int64(seconds*1000 + 0.5)
+}
+
+// dedupeIdenticalMultiChannel removes duplicate lines produced for stereo dual-mono (same text and time on two channels).
+func dedupeIdenticalMultiChannel(in []domain.SpeechSegment) []domain.SpeechSegment {
+	type key struct {
+		startMs int64
+		endMs   int64
+		hash    string
+	}
+
+	best := make(map[key]domain.SpeechSegment)
+	order := make([]key, 0)
+
+	for _, seg := range in {
+		seg.Text = strings.TrimSpace(seg.Text)
+		if seg.Text == "" {
+			continue
+		}
+		k := key{quantMs(seg.Start), quantMs(seg.End), normalizedTextHash(seg.Text)}
+		prev, ok := best[k]
+		if !ok {
+			order = append(order, k)
+			best[k] = seg
+			continue
+		}
+		if utteranceScore(seg) > utteranceScore(prev) {
+			best[k] = seg
+		} else if utteranceScore(seg) == utteranceScore(prev) && seg.Channel < prev.Channel {
+			best[k] = seg
+		}
+	}
+
+	out := make([]domain.SpeechSegment, 0, len(order))
+	for _, k := range order {
+		out = append(out, best[k])
+	}
 	return out
 }
 

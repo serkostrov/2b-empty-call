@@ -17,6 +17,11 @@ type SpeechSegment struct {
 	Start   float64 `json:"start,omitempty"`
 	End     float64 `json:"end,omitempty"`
 	Channel int     `json:"channel,omitempty"`
+	// EOU mirrors RecognitionResponse.eou from SaluteSpeech: true when the utterance is committed.
+	EOU bool `json:"eou,omitempty"`
+	// BufferWindowStart/End mirror processed_audio_* and are used only to collapse partial hypotheses.
+	BufferWindowStart float64 `json:"-"`
+	BufferWindowEnd   float64 `json:"-"`
 }
 
 type ASRResult struct {
