@@ -107,7 +107,11 @@ func walkTranscriptions(v any, out *[]domain.SpeechSegment) {
 			return
 		}
 
-		for _, val := range x {
+		for key, val := range x {
+
+			if key == "results" {
+				continue
+			}
 			walkTranscriptions(val, out)
 		}
 
@@ -117,14 +121,31 @@ func walkTranscriptions(v any, out *[]domain.SpeechSegment) {
 		}
 	}
 }
-
 func isTranscriptionNode(m map[string]any) bool {
-	_, hasResults := m["results"]
-	_, hasChannel := m["channel"]
-	_, hasSpeakerInfo := m["speaker_info"]
-	_, hasSpeakerInfoCamel := m["speakerInfo"]
+	if _, ok := m["results"]; !ok {
+		return false
+	}
 
-	return hasResults && (hasChannel || hasSpeakerInfo || hasSpeakerInfoCamel)
+	if _, ok := m["processed_audio_start"]; ok {
+		return true
+	}
+	if _, ok := m["processedAudioStart"]; ok {
+		return true
+	}
+	if _, ok := m["processed_audio_end"]; ok {
+		return true
+	}
+	if _, ok := m["processedAudioEnd"]; ok {
+		return true
+	}
+	if _, ok := m["channel"]; ok {
+		return true
+	}
+	if _, ok := m["eou"]; ok {
+		return true
+	}
+
+	return false
 }
 
 func segmentFromTranscription(m map[string]any) (domain.SpeechSegment, bool) {
@@ -165,17 +186,16 @@ func bestHypothesisText(m map[string]any) string {
 		return ""
 	}
 
-	h, ok := results[0].(map[string]any)
+	first, ok := results[0].(map[string]any)
 	if !ok {
 		return ""
 	}
 
-	text := firstString(h, "normalized_text", "normalizedText")
-	if strings.TrimSpace(text) != "" {
+	if text := firstString(first, "normalized_text", "normalizedText"); text != "" {
 		return text
 	}
 
-	return firstString(h, "text")
+	return firstString(first, "text")
 }
 
 func boolValue(m map[string]any, key string) (bool, bool) {
@@ -198,7 +218,14 @@ func compactSegments(in []domain.SpeechSegment) []domain.SpeechSegment {
 			continue
 		}
 
-		key := fmt.Sprintf("%s|%.3f|%.3f|%s", seg.Speaker, seg.Start, seg.End, text)
+		key := fmt.Sprintf(
+			"%s|%d|%d|%d",
+			seg.Speaker,
+			int(seg.Start*10),
+			int(seg.End*10),
+			seg.Channel,
+		)
+
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -447,7 +474,6 @@ func (c *Client) createTask(ctx context.Context, token string, fileID string, au
 			"count":                    c.cfg.SpeakersCount,
 		}
 	}
-
 	payload := map[string]any{
 		"request_file_id": fileID,
 		"options":         options,
