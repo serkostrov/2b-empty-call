@@ -183,7 +183,15 @@ func (w *Worker) processAnalyzeCall(ctx context.Context, log *slog.Logger, job d
 		return fmt.Errorf("insert raw asr file: %w", err)
 	}
 
-	if err := w.db.InsertTranscription(ctx, job.OrganizationID, job.CallID, asr.Text, asr.Segments, asr.Raw, w.cfg.Sber.Salute.Model); err != nil {
+	if err := w.db.InsertTranscription(
+		ctx,
+		job.OrganizationID,
+		job.CallID,
+		asr.Text,
+		asr.Segments,
+		asr.Raw,
+		w.cfg.Sber.Salute.Model,
+	); err != nil {
 		return fmt.Errorf("insert transcription: %w", err)
 	}
 	_ = w.db.InsertLog(ctx, job.OrganizationID, job.CallID, job.ID, "info", "transcription_saved", "Транскрибация и сырой ASR сохранены", nil)

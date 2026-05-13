@@ -82,13 +82,15 @@ type SaluteConfig struct {
 	PollTimeout      time.Duration `env:"POLL_TIMEOUT" env-default:"25m"`
 	Language         string        `env:"LANGUAGE" env-default:"ru-RU"`
 	Model            string        `env:"MODEL" env-default:"general"`
-	// SaluteSpeech RecognitionOptions.audio_encoding (e.g. MP3, PCM_S16LE). Empty = infer from filename / Content-Type.
+
 	AudioEncoding string `env:"AUDIO_ENCODING" env-default:""`
-	// Options passed with async_recognize (see RecognitionOptions in SaluteSpeech docs / reference clients).
-	SampleRate               int  `env:"SAMPLE_RATE" env-default:"16000"`
-	ChannelsCount            int  `env:"CHANNELS_COUNT" env-default:"1"`
+	SampleRate    int    `env:"SAMPLE_RATE" env-default:"8000"`
+	ChannelsCount int    `env:"CHANNELS_COUNT" env-default:"1"`
+
 	SpeakerSeparationEnabled bool `env:"SPEAKER_SEPARATION_ENABLED" env-default:"true"`
 	SpeakersCount            int  `env:"SPEAKERS_COUNT" env-default:"2"`
+	HypothesesCount          int  `env:"HYPOTHESES_COUNT" env-default:"1"`
+	EnablePartialResults     bool `env:"ENABLE_PARTIAL_RESULTS" env-default:"false"`
 }
 
 type GigaChatConfig struct {
@@ -132,6 +134,9 @@ func (c Config) Validate() error {
 	}
 	if c.Sber.Salute.SpeakersCount < 0 {
 		return fmt.Errorf("SALUTE_SPEAKERS_COUNT must be >= 0")
+	}
+	if c.Sber.Salute.HypothesesCount < 1 || c.Sber.Salute.HypothesesCount > 10 {
+		return fmt.Errorf("SALUTE_HYPOTHESES_COUNT must be between 1 and 10")
 	}
 	gcScope := strings.TrimSpace(c.Sber.GigaChat.Scope)
 	switch gcScope {
