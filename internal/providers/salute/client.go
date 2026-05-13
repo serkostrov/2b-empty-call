@@ -431,40 +431,21 @@ func (c *Client) createTask(ctx context.Context, token string, fileID string, au
 	}
 	// https://developers.sber.ru/docs/ru/salutespeech/rest/post-async-speech-recognition — required: request_file_id, options (incl. audio_encoding)
 	options := map[string]any{
-		"audio_encoding": enc,
-		"language":       c.cfg.Language,
-		"model":          c.cfg.Model,
+		"audio_encoding":         enc,
+		"language":               c.cfg.Language,
+		"model":                  c.cfg.Model,
+		"sample_rate":            c.cfg.SampleRate,
+		"channels_count":         c.cfg.ChannelsCount,
+		"hypotheses_count":       1,
+		"enable_partial_results": false,
+	}
 
-		// Для этого файла корректно:
-		"sample_rate":    c.cfg.SampleRate,
-		"channels_count": c.cfg.ChannelsCount,
-
-		// Чтобы не получать пачку альтернатив.
-		"hypotheses_count": 1,
-
-		// Чтобы не тащить partial-гипотезы.
-		"enable_partial_results": map[string]any{
-			"enable": false,
-		},
-
-		// Чтобы SaluteSpeech сам разделял говорящих.
-		"speaker_separation_options": map[string]any{
+	if c.cfg.SpeakerSeparationEnabled {
+		options["speaker_separation_options"] = map[string]any{
 			"enable":                   true,
 			"enable_only_main_speaker": false,
-			"count":                    2,
-		},
-
-		"normalization_options": map[string]any{
-			"enable": map[string]any{
-				"enable": true,
-			},
-			"punctuation": map[string]any{
-				"enable": true,
-			},
-			"capitalization": map[string]any{
-				"enable": true,
-			},
-		},
+			"count":                    c.cfg.SpeakersCount,
+		}
 	}
 
 	payload := map[string]any{
